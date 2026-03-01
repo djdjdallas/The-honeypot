@@ -88,41 +88,38 @@ def build_message(role: str, text: str) -> dict:
 def should_continue_session(
     conversation_history: list[dict],
     all_extracted_intel: dict,
-) -> bool:
+) -> tuple[bool, str]:
     """Decide whether to continue engaging the scammer.
 
-    Stops if:
-    - Max turns reached.
-    - Sufficient intel already extracted (wallet + scam classification).
-    - Scammer has gone silent (no new messages).
+    Returns:
+        Tuple of (should_continue, reason).
+        reason is one of: "max_turns", "wallet_extracted",
+        "phishing_extracted", "intel_sufficient", or "" if continuing.
     """
     turn_count = len(conversation_history)
 
     if turn_count >= MAX_TURNS:
         logger.info("Max turns (%d) reached, ending session.", MAX_TURNS)
-        return False
+        return False, "max_turns"
 
     wallets = all_extracted_intel.get("wallets", [])
     links = all_extracted_intel.get("phishing_links", [])
 
-    if turn_count >= 10 and len(wallets) >= 1 and len(links) >= 1:
+    # Wallet extracted → mission accomplished
+    if len(wallets) >= 1:
         logger.info(
-            "Sufficient intel collected at turn %d (wallets=%d, links=%d).",
-            turn_count,
-            len(wallets),
-            len(links),
+            "Wallet address extracted at turn %d, ending session.", turn_count
         )
-        return False
+        return False, "wallet_extracted"
 
-    if turn_count >= 15 and len(wallets) >= 1:
+    # Phishing link extracted → mission accomplished
+    if len(links) >= 1:
         logger.info(
-            "Good intel at turn %d with %d wallets, ending session.",
-            turn_count,
-            len(wallets),
+            "Phishing link extracted at turn %d, ending session.", turn_count
         )
-        return False
+        return False, "phishing_extracted"
 
-    return True
+    return True, ""
 
 
 def run_conversation_turn(

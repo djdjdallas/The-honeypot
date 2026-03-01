@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import DashboardLayout from "../../components/DashboardLayout";
 import StatCard from "../../components/StatCard";
 import { supabase } from "../../lib/supabase";
@@ -16,12 +16,9 @@ export default function WalletsPage() {
   const [wallets, setWallets] = useState([]);
   const [chainFilter, setChainFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [copiedId, setCopiedId] = useState(null);
 
-  useEffect(() => {
-    fetchWallets();
-  }, [chainFilter]);
-
-  async function fetchWallets() {
+  const fetchWallets = useCallback(async () => {
     let query = supabase.from("wallets").select("*").order("created_at", { ascending: false });
 
     if (chainFilter !== "all") {
@@ -33,6 +30,40 @@ export default function WalletsPage() {
       setWallets(data);
     }
     setLoading(false);
+  }, [chainFilter]);
+
+  useEffect(() => {
+    fetchWallets();
+
+    // Subscribe to real-time updates
+    const channel = supabase
+      .channel("wallets-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "wallets" }, () => {
+        fetchWallets();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchWallets]);
+
+  async function copyAddress(address, id) {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // Fallback for non-HTTPS
+      const el = document.createElement("textarea");
+      el.value = address;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    }
   }
 
   const chains = ["all", "ETH", "BTC", "SOL", "TRX"];
@@ -104,6 +135,8 @@ export default function WalletsPage() {
               <th style={thStyle}>Scammer</th>
               <th style={thStyle}>First Seen</th>
               <th style={thStyle}>Sessions</th>
+              <th style={thStyle}>Status</th>
+              <th style={thStyle}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -124,11 +157,59 @@ export default function WalletsPage() {
                     {wallet.chain}
                   </span>
                 </td>
-                <td style={tdStyle}>{wallet.scammer_id || "—"}</td>
+                <td style={tdStyle}>{wallet.scammer_id || "\u2014"}</td>
                 <td style={tdStyle}>
-                  {wallet.first_seen ? new Date(wallet.first_seen).toLocaleDateString() : "—"}
+                  {wallet.first_seen ? new Date(wallet.first_seen).toLocaleDateString() : "\u2014"}
                 </td>
                 <td style={tdStyle}>{wallet.total_sessions || 1}</td>
+                <td style={tdStyle}>
+                  {wallet.synced_to_scamshield ? (
+                    <span
+                      style={{
+                        background: "rgba(0, 212, 170, 0.15)",
+                        color: "var(--accent)",
+                        padding: "0.2rem 0.5rem",
+                        borderRadius: "4px",
+                        fontSize: "0.75rem",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      Synced to ScamShield
+                    </span>
+                  ) : (
+                    <span
+                      style={{
+                        background: "rgba(136, 136, 170, 0.15)",
+                        color: "var(--text-secondary)",
+                        padding: "0.2rem 0.5rem",
+                        borderRadius: "4px",
+                        fontSize: "0.75rem",
+                      }}
+                    >
+                      Pending Sync
+                    </span>
+                  )}
+                </td>
+                <td style={tdStyle}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyAddress(wallet.address, wallet.id);
+                    }}
+                    style={{
+                      background: copiedId === wallet.id ? "var(--accent)" : "var(--bg-secondary)",
+                      color: copiedId === wallet.id ? "var(--bg-primary)" : "var(--text-secondary)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "4px",
+                      padding: "0.25rem 0.6rem",
+                      cursor: "pointer",
+                      fontSize: "0.75rem",
+                      transition: "all 0.2s",
+                    }}
+                  >
+                    {copiedId === wallet.id ? "Copied!" : "Copy"}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

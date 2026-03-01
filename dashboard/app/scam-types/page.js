@@ -31,6 +31,7 @@ export default function ScamTypesPage() {
   const [sessions, setSessions] = useState([]);
   const [typeCounts, setTypeCounts] = useState({});
   const [loading, setLoading] = useState(true);
+  const [chartMode, setChartMode] = useState("bar"); // "bar" or "pie"
 
   useEffect(() => {
     fetchData();
@@ -58,6 +59,119 @@ export default function ScamTypesPage() {
   const sortedTypes = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]);
   const totalSessions = sessions.length;
 
+  // SVG Pie Chart
+  function renderPieChart() {
+    if (sortedTypes.length === 0) return null;
+
+    const size = 240;
+    const radius = 100;
+    const center = size / 2;
+    let cumulativeAngle = -Math.PI / 2; // Start at top
+
+    const slices = sortedTypes.map(([type, count]) => {
+      const percentage = count / totalSessions;
+      const angle = percentage * 2 * Math.PI;
+      const startAngle = cumulativeAngle;
+      const endAngle = cumulativeAngle + angle;
+      cumulativeAngle = endAngle;
+
+      const x1 = center + radius * Math.cos(startAngle);
+      const y1 = center + radius * Math.sin(startAngle);
+      const x2 = center + radius * Math.cos(endAngle);
+      const y2 = center + radius * Math.sin(endAngle);
+      const largeArc = angle > Math.PI ? 1 : 0;
+
+      const pathData =
+        sortedTypes.length === 1
+          ? `M ${center} ${center - radius} A ${radius} ${radius} 0 1 1 ${center - 0.01} ${center - radius} Z`
+          : `M ${center} ${center} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+
+      return { type, count, percentage, pathData };
+    });
+
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: "2rem", flexWrap: "wrap" }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {slices.map((slice) => (
+            <path
+              key={slice.type}
+              d={slice.pathData}
+              fill={SCAM_TYPE_COLORS[slice.type] || "#747d8c"}
+              stroke="var(--bg-card)"
+              strokeWidth="2"
+            >
+              <title>
+                {SCAM_TYPE_LABELS[slice.type] || slice.type}: {slice.count} ({Math.round(slice.percentage * 100)}%)
+              </title>
+            </path>
+          ))}
+        </svg>
+
+        {/* Legend */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {slices.map((slice) => (
+            <div key={slice.type} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <div
+                style={{
+                  width: "12px",
+                  height: "12px",
+                  borderRadius: "2px",
+                  background: SCAM_TYPE_COLORS[slice.type] || "#747d8c",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: "0.85rem" }}>
+                {SCAM_TYPE_LABELS[slice.type] || slice.type}
+              </span>
+              <span style={{ color: "var(--text-secondary)", fontSize: "0.8rem" }}>
+                {slice.count} ({Math.round(slice.percentage * 100)}%)
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderBarChart() {
+    return sortedTypes.map(([type, count]) => (
+      <div key={type} style={{ marginBottom: "0.75rem" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginBottom: "0.3rem",
+          }}
+        >
+          <span style={{ fontSize: "0.85rem" }}>
+            {SCAM_TYPE_LABELS[type] || type}
+          </span>
+          <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
+            {count} ({totalSessions > 0 ? Math.round((count / totalSessions) * 100) : 0}%)
+          </span>
+        </div>
+        <div
+          style={{
+            background: "var(--bg-secondary)",
+            borderRadius: "4px",
+            height: "8px",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              background: SCAM_TYPE_COLORS[type] || "var(--accent)",
+              height: "100%",
+              width: `${totalSessions > 0 ? (count / totalSessions) * 100 : 0}%`,
+              borderRadius: "4px",
+              transition: "width 0.5s ease",
+            }}
+          />
+        </div>
+      </div>
+    ));
+  }
+
   return (
     <DashboardLayout title="Scam Type Analysis">
       <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem", flexWrap: "wrap" }}>
@@ -68,7 +182,7 @@ export default function ScamTypesPage() {
           value={
             sortedTypes.length > 0
               ? SCAM_TYPE_LABELS[sortedTypes[0][0]] || sortedTypes[0][0]
-              : "—"
+              : "\u2014"
           }
           color="var(--danger)"
         />
@@ -80,7 +194,7 @@ export default function ScamTypesPage() {
         <p style={{ color: "var(--text-secondary)" }}>No classified sessions yet.</p>
       ) : (
         <>
-          {/* Bar chart */}
+          {/* Chart with toggle */}
           <div
             style={{
               background: "var(--bg-card)",
@@ -90,45 +204,43 @@ export default function ScamTypesPage() {
               marginBottom: "2rem",
             }}
           >
-            <h3 style={{ color: "var(--text-secondary)", marginBottom: "1rem", fontSize: "0.9rem" }}>
-              Distribution
-            </h3>
-            {sortedTypes.map(([type, count]) => (
-              <div key={type} style={{ marginBottom: "0.75rem" }}>
-                <div
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h3 style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>
+                Distribution
+              </h3>
+              <div style={{ display: "flex", gap: "0.25rem" }}>
+                <button
+                  onClick={() => setChartMode("bar")}
                   style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: "0.3rem",
+                    background: chartMode === "bar" ? "var(--accent)" : "var(--bg-secondary)",
+                    color: chartMode === "bar" ? "var(--bg-primary)" : "var(--text-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "4px 0 0 4px",
+                    padding: "0.3rem 0.75rem",
+                    cursor: "pointer",
+                    fontSize: "0.8rem",
                   }}
                 >
-                  <span style={{ fontSize: "0.85rem" }}>
-                    {SCAM_TYPE_LABELS[type] || type}
-                  </span>
-                  <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                    {count} ({totalSessions > 0 ? Math.round((count / totalSessions) * 100) : 0}%)
-                  </span>
-                </div>
-                <div
+                  Bar
+                </button>
+                <button
+                  onClick={() => setChartMode("pie")}
                   style={{
-                    background: "var(--bg-secondary)",
-                    borderRadius: "4px",
-                    height: "8px",
-                    overflow: "hidden",
+                    background: chartMode === "pie" ? "var(--accent)" : "var(--bg-secondary)",
+                    color: chartMode === "pie" ? "var(--bg-primary)" : "var(--text-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "0 4px 4px 0",
+                    padding: "0.3rem 0.75rem",
+                    cursor: "pointer",
+                    fontSize: "0.8rem",
                   }}
                 >
-                  <div
-                    style={{
-                      background: SCAM_TYPE_COLORS[type] || "var(--accent)",
-                      height: "100%",
-                      width: `${totalSessions > 0 ? (count / totalSessions) * 100 : 0}%`,
-                      borderRadius: "4px",
-                      transition: "width 0.5s ease",
-                    }}
-                  />
-                </div>
+                  Pie
+                </button>
               </div>
-            ))}
+            </div>
+
+            {chartMode === "pie" ? renderPieChart() : renderBarChart()}
           </div>
 
           {/* Recent classified sessions */}

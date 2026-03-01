@@ -190,7 +190,13 @@ SCAM_KEYWORDS = [
 ]
 
 
-def keyword_prefilter(message: str) -> bool:
-    """Quick keyword check before calling Nova. Returns True if suspicious."""
+def keyword_prefilter(message: str, min_matches: int = 2) -> bool:
+    """Quick keyword check before calling Nova.
+
+    Returns True only if at least *min_matches* distinct keywords are found.
+    This avoids false-positive engagements from casual messages that happen
+    to contain a single common phrase.
+    """
     lower = message.lower()
-    return any(kw in lower for kw in SCAM_KEYWORDS)
+    match_count = sum(1 for kw in SCAM_KEYWORDS if kw in lower)
+    return match_count >= min_matches

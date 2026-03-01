@@ -1,4 +1,4 @@
-"""Push session results to Supabase."""
+"""Push session results and per-turn logs to Supabase."""
 
 import logging
 import os
@@ -20,6 +20,41 @@ def _get_supabase():
     return create_client(url, key)
 
 
+def log_turn(
+    scammer_id: str,
+    persona_name: str,
+    turn_number: int,
+    scammer_message: str,
+    agent_reply: str,
+    intel_this_turn: dict,
+) -> None:
+    """Log a single conversation turn to Supabase.
+
+    Called after every scammer message + agent reply so that
+    intelligence is persisted immediately (not just at session end).
+    """
+    supabase = _get_supabase()
+
+    turn_data = {
+        "scammer_id": scammer_id,
+        "persona_used": persona_name,
+        "turn_number": turn_number,
+        "scammer_message": scammer_message,
+        "agent_reply": agent_reply,
+        "wallets_found": [w["address"] for w in intel_this_turn.get("wallets", [])],
+        "urls_found": intel_this_turn.get("urls", []),
+        "phishing_links": intel_this_turn.get("phishing_links", []),
+        "phones_found": intel_this_turn.get("phones", []),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        supabase.table("session_turns").insert(turn_data).execute()
+        logger.debug("Turn %d logged for scammer %s", turn_number, scammer_id)
+    except Exception:
+        logger.exception("Failed to log turn %d for scammer %s", turn_number, scammer_id)
+
+
 def report_session(
     scammer_id: str,
     persona_name: str,
@@ -28,6 +63,8 @@ def report_session(
     trigger_message: str,
     started_at: str,
     turn_count: int,
+    outcome: str = "unknown",
+    source_group: str = "Unknown",
 ) -> dict:
     """Report a completed session to Supabase.
 
@@ -60,6 +97,8 @@ def report_session(
         "started_at": started_at,
         "ended_at": datetime.now(timezone.utc).isoformat(),
         "status": "completed",
+        "outcome": outcome,
+        "source_group": source_group,
     }
 
     result = supabase.table("sessions").insert(session_data).execute()

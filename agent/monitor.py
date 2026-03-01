@@ -5,6 +5,8 @@ Production-ready monitor that:
   - Integrates anti-detection layer for human-like behavior
   - Uses config system for target group management
   - Rate-limits concurrent sessions and new engagements
+  - Ends sessions on silence timeout (10 minutes)
+  - Logs every conversation turn to Supabase
 """
 
 import asyncio
@@ -24,9 +26,12 @@ from .conversation import (
 )
 from .extractor import merge_intel
 from .persona import get_persona
-from .reporter import report_session
+from .reporter import report_session, log_turn
 
 logger = logging.getLogger(__name__)
+
+# Silence timeout: end session if scammer doesn't reply within this window.
+SILENCE_TIMEOUT_SECONDS = 600  # 10 minutes
 
 
 def _create_client(config: AgentConfig) -> TelegramClient:
@@ -64,6 +69,12 @@ class HoneyTrapMonitor:
         # Track active sessions: {scammer_user_id: session_data}
         self.active_sessions: dict[int, dict] = {}
 
+        # Silence timeout tasks: {scammer_user_id: asyncio.Task}
+        self._timeout_tasks: dict[int, asyncio.Task] = {}
+
+        # Map of group entity IDs → group config (for source tracking)
+        self._group_entity_map: dict[int, dict] = {}
+
     async def start(self):
         """Start the monitor — connects, resolves groups, registers handlers."""
         if self.config.session_string:
@@ -94,6 +105,11 @@ class HoneyTrapMonitor:
                 group_entities.append(entity)
                 if group_cfg.preferred_persona:
                     group_persona_map[entity.id] = group_cfg.preferred_persona
+                # Store full mapping for source group tracking
+                self._group_entity_map[entity.id] = {
+                    "identifier": group_cfg.identifier,
+                    "name": group_cfg.display_name,
+                }
                 logger.info(
                     "Monitoring: %s (%s)",
                     group_cfg.display_name,
@@ -139,7 +155,7 @@ class HoneyTrapMonitor:
         if not sender or sender.bot:
             return
 
-        # Stage 1: Fast keyword pre-filter (no API call)
+        # Stage 1: Fast keyword pre-filter (≥2 keyword matches required)
         if not keyword_prefilter(message_text):
             return
 
@@ -177,9 +193,14 @@ class HoneyTrapMonitor:
         preferred = self._group_persona_map.get(group_id)
         persona = get_persona(preferred)
 
-        await self._initiate_engagement(sender, persona, message_text)
+        # Track source group
+        source_group = self._group_entity_map.get(group_id, {}).get(
+            "name", getattr(event.chat, "title", "Unknown")
+        )
 
-    async def _initiate_engagement(self, scammer, persona, trigger_message):
+        await self._initiate_engagement(sender, persona, message_text, source_group)
+
+    async def _initiate_engagement(self, scammer, persona, trigger_message, source_group):
         """Send initial DM to a detected scammer with human-like timing."""
         # Craft a natural opener using the persona's phrases
         opener = (
@@ -200,14 +221,19 @@ class HoneyTrapMonitor:
                 "history": [build_message("assistant", opener)],
                 "intel": {"wallets": [], "urls": [], "phishing_links": [], "phones": []},
                 "trigger_message": trigger_message,
+                "source_group": source_group,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "turn_count": 1,
             }
 
+            # Start silence timeout
+            self._reset_silence_timer(scammer.id)
+
             logger.info(
-                "Engaged user %d as %s. Active sessions: %d",
+                "Engaged user %d as %s (from %s). Active sessions: %d",
                 scammer.id,
                 persona["name"],
+                source_group,
                 self.antidetect._active_session_count,
             )
         except Exception:
@@ -223,6 +249,9 @@ class HoneyTrapMonitor:
         if not message_text:
             return
 
+        # Reset silence timeout — scammer is still active
+        self._reset_silence_timer(sender.id)
+
         session = self.active_sessions[sender.id]
         logger.info(
             "Scammer %d (turn %d/%d): %.80s",
@@ -233,12 +262,15 @@ class HoneyTrapMonitor:
         )
 
         # Check if we should continue
-        if not should_continue_session(session["history"], session["intel"]):
-            await self._end_session(sender.id, reason="intel_sufficient")
+        should_continue, reason = should_continue_session(
+            session["history"], session["intel"]
+        )
+        if not should_continue:
+            await self._end_session(sender.id, outcome=reason)
             return
 
         if session["turn_count"] >= self.config.max_turns:
-            await self._end_session(sender.id, reason="max_turns")
+            await self._end_session(sender.id, outcome="max_turns")
             return
 
         try:
@@ -252,6 +284,19 @@ class HoneyTrapMonitor:
             session["intel"] = merge_intel(session["intel"], new_intel)
             session["turn_count"] += 1
 
+            # Log this turn to Supabase
+            try:
+                log_turn(
+                    scammer_id=str(sender.id),
+                    persona_name=session["persona"]["name"],
+                    turn_number=session["turn_count"],
+                    scammer_message=message_text,
+                    agent_reply=reply,
+                    intel_this_turn=new_intel,
+                )
+            except Exception:
+                logger.exception("Failed to log turn %d for user %d", session["turn_count"], sender.id)
+
             # Send reply with full anti-detection (typing, delays, possible correction)
             await self.antidetect.send_human_message(sender.id, reply)
 
@@ -259,21 +304,52 @@ class HoneyTrapMonitor:
 
         except Exception:
             logger.exception("Error in conversation with user %d", sender.id)
-            await self._end_session(sender.id, reason="error")
+            await self._end_session(sender.id, outcome="error")
 
-    async def _end_session(self, scammer_id: int, reason: str = "unknown"):
+    def _reset_silence_timer(self, scammer_id: int):
+        """Cancel the existing timeout and start a new 10-minute timer."""
+        # Cancel existing timer if any
+        existing = self._timeout_tasks.pop(scammer_id, None)
+        if existing and not existing.done():
+            existing.cancel()
+
+        # Start new timer
+        self._timeout_tasks[scammer_id] = asyncio.create_task(
+            self._silence_timeout(scammer_id)
+        )
+
+    async def _silence_timeout(self, scammer_id: int):
+        """End the session if the scammer doesn't reply within the timeout."""
+        try:
+            await asyncio.sleep(SILENCE_TIMEOUT_SECONDS)
+            if scammer_id in self.active_sessions:
+                logger.info(
+                    "Silence timeout (%ds) for user %d — ending session.",
+                    SILENCE_TIMEOUT_SECONDS,
+                    scammer_id,
+                )
+                await self._end_session(scammer_id, outcome="abandoned")
+        except asyncio.CancelledError:
+            pass  # Timer was reset because scammer replied
+
+    async def _end_session(self, scammer_id: int, outcome: str = "unknown"):
         """End a session, report results, and release rate limit slot."""
         session = self.active_sessions.pop(scammer_id, None)
         if not session:
             return
 
+        # Cancel silence timer
+        timeout_task = self._timeout_tasks.pop(scammer_id, None)
+        if timeout_task and not timeout_task.done():
+            timeout_task.cancel()
+
         self.antidetect.release_session()
 
         logger.info(
-            "Ending session with user %d after %d turns. Reason: %s. Active: %d",
+            "Ending session with user %d after %d turns. Outcome: %s. Active: %d",
             scammer_id,
             session["turn_count"],
-            reason,
+            outcome,
             self.antidetect._active_session_count,
         )
 
@@ -299,6 +375,8 @@ class HoneyTrapMonitor:
                 trigger_message=session["trigger_message"],
                 started_at=session["started_at"],
                 turn_count=session["turn_count"],
+                outcome=outcome,
+                source_group=session.get("source_group", "Unknown"),
             )
         except Exception:
             logger.exception("Failed to report session for user %d", scammer_id)

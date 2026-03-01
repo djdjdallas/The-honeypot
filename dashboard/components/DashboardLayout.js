@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const navItems = [
-  { href: "/", label: "Home" },
+  { href: "/", label: "Home", exact: true },
   { href: "/live-feed", label: "Live Feed" },
   { href: "/wallets", label: "Wallets" },
   { href: "/script-patterns", label: "Script Patterns" },
@@ -37,21 +37,29 @@ export default function DashboardLayout({ children, title }) {
           </Link>
         </div>
         <nav>
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              style={{
-                display: "block",
-                padding: "0.6rem 1.25rem",
-                color: pathname === item.href ? "var(--accent)" : "var(--text-secondary)",
-                borderLeft: pathname === item.href ? "3px solid var(--accent)" : "3px solid transparent",
-                fontSize: "0.9rem",
-              }}
-            >
-              {item.label}
-            </Link>
-          ))}
+          {navItems.map((item) => {
+            const isActive = item.exact
+              ? pathname === item.href
+              : pathname === item.href || pathname.startsWith(item.href + "/");
+            // Session detail pages highlight Live Feed
+            const isSessionPage = pathname.startsWith("/session/");
+            const highlight = isActive || (item.href === "/live-feed" && isSessionPage);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                style={{
+                  display: "block",
+                  padding: "0.6rem 1.25rem",
+                  color: highlight ? "var(--accent)" : "var(--text-secondary)",
+                  borderLeft: highlight ? "3px solid var(--accent)" : "3px solid transparent",
+                  fontSize: "0.9rem",
+                }}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
       </aside>
       <main style={{ flex: 1, padding: "2rem" }}>
