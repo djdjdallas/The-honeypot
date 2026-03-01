@@ -14,6 +14,10 @@ venv/
 .env.local
 .env.production
 
+# Telethon session files (file-based sessions in dev mode)
+*.session
+*.session-journal
+
 # IDE
 .vscode/
 .idea/

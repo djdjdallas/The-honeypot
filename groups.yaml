@@ -1,0 +1,30 @@
+# HoneyTrap — Target Group Configuration
+#
+# Define the public Telegram groups to monitor for crypto scam activity.
+# Only PUBLIC groups are monitored. The agent joins as a passive listener
+# and only engages when a scammer initiates contact.
+#
+# Each group entry supports:
+#   id:       Telegram username (without @), invite link, or numeric ID
+#   name:     Human-readable label (optional, for logs/dashboard)
+#   active:   true/false — toggle monitoring without removing the entry
+#   persona:  Force a specific persona (mike/sandra/james) or omit for random
+#   notes:    Free-text notes for your reference
+
+groups:
+  # --- Example entries (replace with real groups) ---
+
+  # Simple format: just the group identifier
+  # - cryptotrading_public
+
+  # Full format with all options
+  - id: example_crypto_group
+    name: Example Crypto Trading
+    active: false
+    notes: Replace with a real public crypto group
+
+  - id: example_defi_chat
+    name: Example DeFi Discussion
+    active: false
+    persona: sandra
+    notes: Sandra works well here — group has semi-technical discussion
